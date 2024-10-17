@@ -1,0 +1,3 @@
+Module	Section	Sample Name	Source
+FastQC	all_sections	SRR934366_1	/Users/user/Desktop/Bioinformatics I/EXAM project/Bioinformatics_project/SRR934366_1_fastqc.zip
+FastQC	all_sections	SRR934361_1	/Users/user/Desktop/Bioinformatics I/EXAM project/Bioinformatics_project/SRR934361_1_fastqc.zip

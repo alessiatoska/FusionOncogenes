@@ -1,0 +1,587 @@
+---
+title: "Novel kinase fusion oncogenes in post-Chernobyl radiation-induced pediatric
+  thyroid cancers"
+author: "Alessia Toska"
+date: "2024-06-20"
+output: 
+  html_document:
+    keep_md: yes
+editor_options: 
+  markdown: 
+    wrap: sentence
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Step 1: I downloaded the data of my experiment from the Expression Atlas
+
+### Step 2: Differential Expression analysis with DESeq2
+
+**Creating colData (importing experiment design file)**
+
+```{r }
+colData <- read.delim("E-GEOD-48850-experiment-design.tsv", sep = '\t', header = TRUE, row.names = 1)
+head (colData)
+```
+
+**Importing the raw counts table**
+
+```{r}
+counts <- read.delim("E-GEOD-48850-raw-counts.tsv", sep = "\t", header = TRUE, row.names = 1)
+countData<- as.matrix(subset(counts, select = c(-Gene.Name)))
+
+head(countData) 
+
+```
+
+```{r}
+#Reordering colData to match the column names of counts
+colData <- colData [colnames(countData), ]
+# Verifying the alignment again
+all(colnames(countData) == rownames(colData))
+```
+
+**Defining the design formula, in my case it's Factor.Value.disease.: papillary thyroid cancer vs normal**
+
+```{r}
+designFormula <- "~  Factor.Value.disease."
+```
+
+**Running DESeq2 pipeline: transforming raw RNA-Seq count data into meaningful differential expression results**
+
+**Creating a DESeqDataSet object, preparing RNA-Seq data for differential expression analysis**
+
+```{r}
+library(DESeq2)
+#importing the data
+dds <- DESeqDataSetFromMatrix(countData = countData, 
+                              colData = colData, 
+                              design = as.formula(designFormula))
+#dds
+```
+
+**Filtering lowly expressed genes**
+
+```{r}
+dds <- dds[rowSums(counts(dds)) > 1, ]
+dds
+```
+
+**Running the DESeq2 pipeline**
+
+```{r}
+dds <- DESeq(dds) 
+
+#Table with results
+DEresults <- results(dds)
+summary(DEresults)
+
+#ordering results by adjusted p-value
+DEresults <- DEresults[order(DEresults$pvalue), ]
+head(DEresults)
+```
+
+**Performing variance stabilizing transformation:**
+
+The VST transforms the count data to a scale where the variance is approximately constant across the range of mean values, making the data more suitable for visualization
+
+```{r}
+vst <- vst(dds)
+```
+
+**Plotting PCA**
+
+```{r}
+library(ggplot2)
+pca_plot<- plotPCA(vst, ntop = 500, intgroup = 'Factor.Value.disease.') 
+pca_plot + ggtitle("PCA Plot")
+```
+
+PC1 accounts for 51% of the total variance, indicating that the largest source of variation in the gene expression data is likely due to the difference between normal and carcinoma samples.
+PC2 accounts for 20% of the variance, which may represent other sources of variation within the samples, possibly due to biological variability or other technical factors.
+
+**Plotting a heatmap of the sample-to-sample distances**
+
+```{r}
+#calculating the sample-to-sample distances
+sampleDists <- dist(t(assay(vst))) 
+# dist - computes the Euclidean distance between samples based on the vst data.
+# t- ensures that distances are computed between samples, not genes.
+# assay - extracts the vst matrix 
+
+library ("pheatmap")
+library ("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists) #converting distance matrix to a matrix object
+colors <- colorRampPalette(brewer.pal(9, "Purples") )(255) #I like purple 
+
+# Plotting the heatmap
+pheatmap(sampleDistMatrix, 
+         clustering_distance_rows=sampleDists,  
+         clustering_distance_cols=sampleDists, 
+         fontsize=10,     
+         angle_col=90,  # rotating column labels
+         cellwidth=15,      
+         cellheight=15,    
+         color=colors,
+         main="Sample-to-Sample Distances Heatmap")
+```
+
+We can see based on the colors the distances between the samples.
+Where we have darker colors the distance between the samples is larger, and it's smaller for lightest.
+Also, the samples that cluster together are more similar to each-other.
+
+**Performing the comparison between the experimental group of samples using the right vector comparison with the contrast argument**
+
+```{r}
+res1 <- results(dds, contrast = c("Factor.Value.disease.", "papillary thyroid carcinoma", "normal"))
+summary(res1)
+
+```
+
+**Creating a Volcano plot for the "papillary thyroid carcinoma" vs "normal" comparison**
+
+```{r fig.height=6, fig.width=8}
+library (EnhancedVolcano)
+
+EnhancedVolcano(res1,
+                lab = rownames(res1),
+                x = 'log2FoldChange', 
+                y = 'padj',
+                title = 'Volcano Plot: Papillary Thyroid Carcinoma vs Normal',
+                pointSize=3.0,
+                labSize=2.0,
+                pCutoff=0.05)
+
+```
+
+The points in red represent the genes of the highest interest in the experiment as they are statistically significant for both p-value and log2 fold change.
+We can see the significantly up-regulated and down-regulated genes in individuals with papillary thyroid carcinoma compared to the controls, and it's very apparent that there are fewer down-regulated genes in the plot.
+
+**MA plot** It shows the relationship between the expression level (mean expression lvl) and the log2FC between the two conditions of the experiment.
+
+```{r}
+DESeq2 :: plotMA(object = res1, main="MA Plot: Papillary Thyroid Carcinoma vs Normal", ylim = c(-4, 4), colSig = "red")
+```
+
+Each data point represents a gene.
+*Gray points*: do not show statistically significant differences in expression between the two conditions.
+
+*Red points*: represent genes that are significantly differentially expressed between PTC and Normal tissue.
+
+*Triangles*: log2fc is greater/lower than upper/lower limit of the MA plot
+
+Overexpressed genes may be involved in promoting cancerous processes, whereas underexpressed genes may include those involved in normal cellular functions or tumor suppression.
+
+**Heatmap of the top 50 most differentially expressed genes**
+
+```{r fig.height=8}
+#ordering genes by padj (50 most significant)
+top50 <- rownames(res1[order(res1$padj),  ])[1:50]
+matrix_vst <- assay(vst)[top50, ] # selecting the top 50 genes from the vst data matrix
+
+library("org.Hs.eg.db")
+# Map ENSEMBL IDs to gene symbols
+gene_symbols <- mapIds(org.Hs.eg.db,
+                       keys = top50,
+                       column = "SYMBOL",
+                       keytype = "ENSEMBL",
+                       multiVals = "first")
+# Replace row names with gene symbols
+rownames(matrix_vst) <- gene_symbols
+#normalization of the data (scaled the data)
+scaled <- t(scale(t(matrix_vst)))
+
+#Added annotations for the columns (samples) based on condition for a clearer heatmap
+annotation_col <- data.frame(Condition = colData(vst)$Factor.Value.disease.) 
+rownames(annotation_col) <- colnames(vst)
+colors <- colorRampPalette(brewer.pal(9, "Purples") )(255) 
+pheatmap(scaled, 
+         annotation_col = annotation_col, 
+         cluster_rows = TRUE, 
+         cluster_cols = TRUE, 
+         show_rownames = TRUE, 
+         show_colnames = TRUE,
+         fontsize=10,
+         color= colors,
+         main = " Heatmap: Top 50 Most Differentially Expressed Genes")
+
+```
+
+Genes that have similar expression patterns are clustered together, and as we see the normal and carcinoma genes did cluster together.
+
+The heatmap visually highlights the differences in levels of the top 50 genes between conditions.
+When a sample from papillary thyroid carcinoma shows consistently higher expression for a set of genes compared to normal samples, these genes may be involved in cancer progression.
+And in fact the highly expressed genes, when upregulated, are involved in *angiogenesis, cell-survival, metabolic reprogramming, immune evasion* etc.
+
+Examples of upregulated genes shown in the heatmap:
+
+-   **ADAMTS9**: involved in ECM organization and has roles in development, inflammation, and cancer progression.
+-   **SCEL**: encodes for sciellin which plays a role in the positive regulation of Wnt signaling pathway, which is critical for cell proliferation, differentiation, and migration.
+
+Down-regulated:
+
+We notice a down-regulation of ZDHHC11B gene in PTC.
+- **ZDHHC11B**: is involved in the palmitoylation of substrate proteins, which affects their membrane association and function.
+This modification is essential for the proper localization and functioning of many signaling proteins and receptors.
+It can act as a tumor suppressor by maintaining the proper localization and function of signaling proteins and its downregulation or dysfunction has been observed in various cancers, contributing to unchecked cell proliferation, survival, and metastasis.
+
+### Step 3: GO (Gene Ontology) enrichment analysis
+
+```{r}
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+
+#mapping ENSEMBL IDs to SYMBOLs for all genes in res1
+res1$symbol <- mapIds(org.Hs.eg.db,
+                  keys = rownames(res1),
+                  column = "SYMBOL",
+                  keytype = "ENSEMBL",
+                  multiVals = "first")
+
+# Filtering genes with non-NA symbols and padj into res1_flt
+res1_flt <- res1[!is.na(res1$symbol) & !is.na(res1$padj),]
+
+# Extract universe symbols from res1_flt
+universeGO <- res1_flt$symbol #the universe represents the list of gene symbols that will be used the GO enrichment analysis
+```
+
+```{r}
+db<- "org.Hs.eg.db"
+```
+
+```{r}
+library(clusterProfiler)
+# GO enrichment analysis for Biological Processes (BP)
+GO_BP <- enrichGO(universeGO, OrgDb = db, 
+                  keyType = "SYMBOL", ont = "BP")
+# GO enrichment analysis for Molecular Functions (MF)
+GO_MF <- enrichGO(universeGO, OrgDb = db, 
+                  keyType = "SYMBOL", ont = "MF")
+
+```
+
+**Plotting the results**
+
+```{r}
+dotplot(GO_BP, title = "Biological Process")
+dotplot(GO_MF, title = "Molecular Functions")
+```
+
+-   The size of each dot represents the count of differentially expressed genes associated with each biological process. Larger dots: higher number of differentially expressed genes within that process.
+-   The color gradient ranges from blue to red, with blue indicating higher p-values (less significant) and red indicating lower p-values (more significant). The p.adjust values are adjusted for multiple comparisons to control the false discovery rate (FDR).
+
+Example from BP: - **Small GTPase Mediated Signal Transduction**: is significantly overrepresented in the dataset, suggesting that it's highly active in radiation-induced PTC.
+This pathway is crucial for various cellular processes, including growth and migration.
+- tRNA Metabolic Process: this process is less enriched compared to others, suggesting it is not a major pathway altered in PTC.
+
+Example from MF: - **Protein Serine/Threonine Kinase Activity**: active signaling through serine/threonine kinases, which are critical for regulating cell cycle, growth, and apoptosis, all important in cancer biology.
+
+**Analyzing up and down regulated genes**
+
+```{r}
+upregulated<- res1_flt[res1_flt$log2FoldChange > 0 & res1_flt$padj<0.05, ]
+downregulated <- res1_flt[res1_flt$log2FoldChange < 0 & res1_flt$padj<0.05, ]
+```
+
+**Performing GO of up and down regulated Biological processes and molecular functions, with their respective dotplots**
+
+```{r}
+BP_up <- enrichGO(gene = upregulated$symbol, 
+                        OrgDb =  db, 
+                        keyType = "SYMBOL", 
+                        ont = "BP", 
+                        readable = TRUE, 
+                        pvalueCutoff = 0.05,
+                        universe = universeGO)
+dotplot(BP_up, title = "Upregulated Biological Processes")
+```
+
+As expected angiogenesis, synapse organization, cell junction assembly are upregulated biological processes in PTC.
+Very usual in cancer cells as they aim to spread, secrete their own signals for communication and growth.
+
+```{r}
+MF_up <- enrichGO(gene = upregulated$symbol, 
+                        OrgDb = db, 
+                        keyType = "SYMBOL", 
+                        ont = "MF",
+                        readable = TRUE, 
+                        pvalueCutoff = 0.05,
+                        universe = universeGO)
+dotplot(MF_up, title = "Upregulated Molecular Functions")
+```
+
+We see upregulated functions which can be involved in cell signaling, immune response, digestion etc.
+
+```{r}
+BP_down <- enrichGO(gene = downregulated$symbol, 
+                        OrgDb = db, 
+                        keyType = "SYMBOL", 
+                        ont = "BP", 
+                        readable = TRUE, 
+                        pvalueCutoff = 0.05,
+                        universe = universeGO)
+dotplot(BP_down, title = "Downregulated Biological Processes")
+```
+
+31 genes involved in cilium organization are downregulated.
+Might be a specific response to radiation exposure, leading to changes in the structural and functional properties of PTC cells.
+
+```{r}
+#no significant results were found for down-regulated molecular functions, therefore it's not possible to display a dotplot 
+MF_down <- enrichGO(gene = downregulated$symbol, 
+                        OrgDb = db, 
+                        keyType = "SYMBOL", 
+                        ont = "MF", 
+                        readable = TRUE, 
+                        pvalueCutoff = 0.05,
+                        )
+head(MF_down)
+#it takes a less stringent pvalueCutoff to show any results (eg. 0.1), however they are not significant.
+```
+
+**Comparing the results in the same dot plot**
+
+```{r}
+BP_compare <- compareCluster(list(Upregulated = upregulated$symbol, Downregulated = downregulated$symbol), 
+                             fun = "enrichGO",
+                             OrgDb = db,
+                             keyType = "SYMBOL",
+                             pvalueCutoff = 0.05,
+                             ont = "BP")
+dotplot(BP_compare, title = "BP Cluster Comparison")
+```
+
+```{r}
+MF_compare <- compareCluster(list(Upregulated = upregulated$symbol, Downregulated = downregulated$symbol), 
+                             fun = "enrichGO",
+                             OrgDb = db,
+                             keyType = "SYMBOL",
+                             pvalueCutoff = 0.05,
+                             ont = "MF")
+dotplot(MF_compare, title = "MF Cluster Comparison")
+#since there were no significantly downregulated molecular functions the comparison will only show the upregulated ones
+```
+
+**Pathway Enrichment Analysis with ReactomePA**
+
+It's more focused on specific molecular events and their connections in defined pathways
+
+```{r}
+#Preparation
+library("ReactomePA")
+#Mapping ENSEMBL IDs to ENTREZ IDs 
+#Creating another variable to not get confused, res1 filtered for ENTREZ will now be res1_entr
+res1_entr <- res1_flt
+res1_entr$entrez <- mapIds(org.Hs.eg.db,
+                    keys = rownames(res1_entr),
+                    column = "ENTREZID",
+                    keytype = "ENSEMBL",
+                    multiVals = "first")
+#filtering for NA and padj
+res1_entr <- res1_entr[!is.na(res1_entr$entrez) & !is.na(res1_entr$padj),]
+
+universeP<- res1_entr$entrez # universe for Pathway enrichment analysis, hence P
+
+# Subset upregulated and downregulated genes
+UP <- res1_entr[res1_entr$log2FoldChange > 0 & res1_entr$padj < 0.05, ]
+DOWN <- res1_entr[res1_entr$log2FoldChange < 0 & res1_entr$padj < 0.05, ]
+
+```
+
+**Performing pathway enrichment analysis of up and down regulated pathways, with their respective dot plots**
+
+```{r}
+pathway_up <- enrichPathway(gene = UP$entrez,
+                            organism = "human",
+                            pvalueCutoff = 0.05,
+                            universe= universeP)
+dotplot(pathway_up, title = "Upregulated Reactome Pathways")
+```
+
+```{r}
+#no significant results were found for downregulated pathways, therefore it's not possible to display a dotplot 
+pathway_down <- enrichPathway(gene = DOWN$entrez,
+                              organism = "human",
+                              pvalueCutoff = 0.05,
+                              readable= TRUE,
+                              universe= universeP)
+head(pathway_down) 
+```
+
+**Comparison in the same dotplot**
+
+```{r}
+pathway_updown <-compareCluster(list(Upregulated = UP$entrez, Downregulated = DOWN$entrez),
+    fun = "enrichPathway",
+    organism = "human",
+    pvalueCutoff = 0.05,
+    universe= universeP)
+dotplot(pathway_updown, title = "Up and downregulated Reactome Pathways")
+```
+
+### Step 4: GSEA
+
+**Performing a GSEA with the rank of the DEGs result table with the HALLMARK gene sets**
+
+```{r}
+library(msigdbr)
+
+# select the Hallmark genesets
+h_gene_sets <- msigdbr(species = "human", category = "H")
+msigdbr_t2g <-
+  as.data.frame(dplyr::distinct(h_gene_sets, gs_name, ensembl_gene))
+
+# create the gene rank
+rank <- res1_flt$stat
+names(rank) <- rownames(res1_flt)
+
+# perform GSEA
+gsea <- clusterProfiler::GSEA(geneList = sort(rank, decreasing = TRUE), TERM2GENE = msigdbr_t2g, pvalueCutoff = 0.05)
+```
+
+**GSEA enrichment plot**
+
+```{r, fig.height=5, fig.width=8}
+gseaplot(gsea, geneSetID = 1, by = "runningScore", title = "GSEA ES plot")
+```
+
+Running enrichment score gives a line plot showing how the enrichment score accumulates as the genes are traversed in the ranked list.
+
+-   The highest point of the green line represents the peak enrichment score, and the red line shows it's maximum.
+-   In this case, the maximum ES is around 0.45 showing that the gene set is significantly enriched at that point in the ranked list.
+
+The vertical lines indicate where the genes appear in the ranked list (so the gene set positions).
+- The black lines are concentrated near the start of the ranked list, so the gene set is mostly found at the top of the ranked list (hence the early increase in the running enrichment score)
+
+**GSEA barplot**
+
+```{r, fig.height=4, fig.width=8}
+#NES = Normalized Enrichment Score
+#descriptions reordered by NES
+ggplot(gsea, aes(NES, reorder(Description, NES), fill=qvalue),
+       showCategory=20) + 
+  geom_col(orientation='y') +
+  scale_fill_continuous(low='red', 
+                        high='blue', 
+                        guide=guide_colorbar(reverse=TRUE)) + 
+  ylab(NULL) + 
+  ggtitle("GSEA Hallmark") +
+  theme_minimal()
+```
+
+Gene sets at the top of the list (like "HALLMARK_P53_PATHWAY", "HALLMARK_GLYCOLYSIS") have the highest NES, indicating they are most strongly enriched in the data.
+The corresponding q-values for these gene sets can be observed.
+
+-   For instance **"HALLMARK_P53_PATHWAY"** has a high NES and is colored red, indicating a relatively low q-value (high statistical significance).
+    That means we have a significant upregulation in this gene set, implying that the p53 pathway is highly enriched in the gene expression profile of PTC cases.
+    And that makes sense in this context: The p53 pathway is a critical regulatory pathway involved in cellular responses to stress, DNA damage, and oncogenic signals.
+    It plays a major role in controlling cell cycle arrest, apoptosis and DNA repair mechanisms.
+    In the context of radiation-induced damage, such as that from the Chernobyl incident, the activation of the p53 pathway suggests that cells are responding to the DNA damage caused by radiation.
+
+-   Overexpression of **glycolysis-related genes** suggests a shift towards anaerobic metabolism, a common feature of cancer cells known as the Warburg effect, where cancer cells rely more on glycolysis for energy production even in the presence of oxygen.
+
+-   **PI3K/AKT/mTOR** overexpression indicates activation of the signaling pathway, which is commonly altered in cancer and contributes to oncogenesis and tumor progression.
+
+### Step 5: Check reads quality with FastQC
+
+The report provided a series of plots and summary statistics.
+Available on a separate file
+
+### Step6: Generate a report with MultiQC
+
+It compiled the information for the FastQCs of the different samples i selected into a single HTML report.
+Also available on a separate file
+
+### Step7: Check differential expression analysis results of expression atlas
+
+```{r}
+library(readr)
+atlas <- read_delim("E-GEOD-48850-query-results.tsv", 
+    delim = "\t", 
+    escape_double = FALSE, 
+    trim_ws = TRUE, 
+    skip = 3, 
+    col_names = TRUE)
+
+#renaming the columns 
+colnames(atlas) <- c("ensembl", 
+                     "symbol", 
+                     "log2FoldChange", 
+                     "padj")
+
+summary(atlas)
+```
+
+```{r}
+# Converting res1_flt to data frame (using res1_flt because it was already filtered for NA and padj)
+res1_df <- as.data.frame(res1_flt)
+
+# Merging res1 with Expression Atlas results based on gene symbols
+comparison_df <- merge(res1_df, atlas, by = "symbol", suffixes = c("_res1", "_actual"))
+
+#calculating the differences in log2FoldChange values
+comparison_df$log2FoldChange_diff <- abs(comparison_df$log2FoldChange_res1 - comparison_df$log2FoldChange_actual)
+
+#displaying the top genes with the most similar log2FoldChange values
+result <- comparison_df[order(comparison_df$log2FoldChange_diff), ]
+head(result[, c("ensembl", "symbol", "log2FoldChange_res1", "log2FoldChange_actual", "log2FoldChange_diff")])
+#the values are close enough 
+```
+
+### Final step:
+
+**How many genes are differentially expressed at the thresholds of padj \< 0.05? And padj \< 0.1?**
+
+```{r}
+de_genes.05 <- sum(res1$padj < 0.05, na.rm = TRUE) #na.rm to ignore the NA values in the padj column
+de_genes.05
+
+# Number of genes with padj < 0.1
+de_genes.1 <- sum(res1$padj < 0.1, na.rm = TRUE)
+de_genes.1
+```
+
+**How many genes at the thresholds of padj \< 0.05 are upregulated ( \> 0) or downregulated?**
+
+```{r}
+# Number of upregulated genes (log2FoldChange > 0 and padj < 0.05)
+up_genes <- sum(res1$log2FoldChange > 0 & res1$padj < 0.05, na.rm = TRUE)
+up_genes
+
+# Number of downregulated genes (log2FoldChange < 0 and padj < 0.05)
+down_genes <- sum(res1$log2FoldChange < 0 & res1$padj < 0.05, na.rm = TRUE)
+down_genes
+```
+
+**Choose one of the GO enrichment results and report how many categories are significant**
+
+```{r}
+# Converting GO_BP results to a data frame
+GO_BP_df <- as.data.frame(GO_BP)
+
+# Number of significant categories with p.adjust < 0.05
+signif_GO_BP <- sum(GO_BP_df$p.adjust < 0.05, na.rm = TRUE) 
+signif_GO_BP
+```
+
+**How many genes are present in the most enriched category of the GO BP enrichment result?**
+
+```{r}
+# First i have to find the most enriched GO BP category (so, by smallest p.adjust value)
+topBP <- GO_BP_df[which.min(GO_BP_df$p.adjust), ] # extracting the row from GO_BP_df corresponding to the smallest adjusted p-value
+
+# finding nr  of genes in the most enriched GO BP category
+topBP<- length(unlist(strsplit(topBP$geneID, "/"))) #splits this string into a list of individual gene IDs.
+topBP
+```
+
+**DEGs result table**
+
+```{r}
+write.csv(res1, file = "DEGs_results.csv", row.names = TRUE)
+```
+
+Thank you!
